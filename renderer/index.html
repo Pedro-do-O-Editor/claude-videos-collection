@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src file:; style-src file: 'unsafe-inline'; img-src file: data:; media-src file:; frame-src file:; font-src file:">
+  <title>Claude Videos Collection</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="app">
+    <aside id="sidebar">
+      <div class="drag titlebar-space"></div>
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <span class="brand-name">Claude Videos Collection</span>
+      </div>
+      <nav class="nav" id="nav-main"></nav>
+      <div class="side-label">
+        <span>Pastas</span>
+        <button class="icon-btn" id="btn-add-root-small" title="Adicionar pasta (⌘O)"></button>
+      </div>
+      <div class="tree" id="tree"></div>
+      <div class="side-foot">
+        <button class="btn ghost full" id="btn-add-root">Adicionar pasta</button>
+        <div class="status" id="status"></div>
+      </div>
+    </aside>
+
+    <main id="main">
+      <header class="topbar drag">
+        <div class="crumbs no-drag" id="crumbs"></div>
+        <div class="top-actions no-drag">
+          <div class="search">
+            <span class="search-ico" aria-hidden="true"></span>
+            <input id="search" type="search" placeholder="Buscar arquivos" spellcheck="false" autocomplete="off">
+          </div>
+          <button class="icon-btn" id="btn-rescan" title="Atualizar biblioteca (⌘R)"></button>
+        </div>
+      </header>
+
+      <section id="view-library">
+        <div class="filterbar">
+          <div class="chips" id="chips"></div>
+          <div class="filter-right">
+            <span class="count" id="count"></span>
+            <button class="btn ghost small" id="btn-folder-sessions">Conversas da pasta</button>
+            <div class="seg" id="seg-view" title="Mostrar por pasta ou tudo junto"></div>
+            <select id="sort" class="select" title="Ordenar">
+              <option value="date">Mais recentes</option>
+              <option value="name">Nome</option>
+              <option value="size">Tamanho</option>
+            </select>
+            <input id="size" class="range" type="range" min="150" max="380" step="10" title="Tamanho das miniaturas">
+          </div>
+        </div>
+        <div class="scroller" id="scroller">
+          <div id="content"></div>
+        </div>
+      </section>
+
+      <section id="view-sessions" hidden>
+        <div class="sess-list-col">
+          <div class="sess-list-head">
+            <div class="search wide">
+              <span class="search-ico" aria-hidden="true"></span>
+              <input id="sess-search" type="search" placeholder="Buscar conversas" spellcheck="false" autocomplete="off">
+            </div>
+            <div class="sess-filter" id="sess-filter" hidden></div>
+          </div>
+          <div class="sess-list" id="sess-list"></div>
+        </div>
+        <div class="sess-detail" id="sess-detail"></div>
+      </section>
+    </main>
+
+    <section id="viewer" hidden>
+      <header class="viewer-head drag">
+        <button class="icon-btn no-drag" id="v-back" title="Voltar (Esc)"></button>
+        <div class="v-title no-drag">
+          <div class="v-name" id="v-name"></div>
+          <div class="v-path" id="v-path"></div>
+        </div>
+        <div class="v-actions no-drag">
+          <span class="v-pos" id="v-pos"></span>
+          <button class="icon-btn" id="v-prev" title="Arquivo anterior (⌘←)"></button>
+          <button class="icon-btn" id="v-next" title="Próximo arquivo (⌘→)"></button>
+          <span class="sep"></span>
+          <button class="btn ghost small" id="v-reveal">Mostrar no Finder</button>
+          <button class="btn ghost small" id="v-open">Abrir</button>
+          <button class="icon-btn" id="v-panel" title="Mostrar ou esconder o painel"></button>
+        </div>
+      </header>
+      <div class="viewer-body">
+        <div class="stage-col">
+          <div class="stage" id="stage"></div>
+          <div class="transport" id="transport">
+            <div class="scrub" id="scrub">
+              <div class="scrub-track"><div class="scrub-buf" id="scrub-buf"></div><div class="scrub-fill" id="scrub-fill"></div></div>
+              <div class="scrub-knob" id="scrub-knob"></div>
+              <div class="scrub-tip" id="scrub-tip" hidden></div>
+            </div>
+            <div class="t-row">
+              <div class="t-left">
+                <button class="icon-btn big" id="t-play" title="Reproduzir / pausar (espaço)"></button>
+                <button class="icon-btn" id="t-loop" title="Repetir (L)"></button>
+                <select id="t-speed" class="select mini" title="Velocidade">
+                  <option value="0.25">0,25×</option>
+                  <option value="0.5">0,5×</option>
+                  <option value="1" selected>1×</option>
+                  <option value="1.5">1,5×</option>
+                  <option value="2">2×</option>
+                </select>
+                <button class="icon-btn" id="t-mute" title="Mudo (M)"></button>
+                <input id="t-vol" class="range vol" type="range" min="0" max="1" step="0.02" value="1" title="Volume">
+              </div>
+              <div class="t-time"><span id="t-cur">00:00</span><span class="t-sep">/</span><span id="t-dur">00:00</span></div>
+              <div class="t-right">
+                <span class="t-meta" id="t-meta"></span>
+                <button class="icon-btn" id="t-full" title="Tela cheia (F)"></button>
+              </div>
+            </div>
+          </div>
+          <div class="htmlbar" id="htmlbar" hidden>
+            <span class="htmlbar-note" id="htmlbar-note"></span>
+            <div class="htmlbar-actions">
+              <button class="btn small" id="h-render" hidden>Ver último render</button>
+              <button class="btn ghost small" id="h-dev" hidden>Abrir preview animado</button>
+              <button class="btn ghost small" id="h-reload">Recarregar</button>
+              <button class="btn ghost small" id="h-browser">Abrir no navegador</button>
+            </div>
+          </div>
+        </div>
+        <aside class="panel" id="panel">
+          <div class="tabs" id="tabs">
+            <button class="tab on" data-tab="chat">Conversas</button>
+            <button class="tab" data-tab="info">Informações</button>
+          </div>
+          <div class="tab-body" id="tab-chat"></div>
+          <div class="tab-body" id="tab-info" hidden></div>
+        </aside>
+      </div>
+    </section>
+  </div>
+  <div id="toast" hidden></div>
+  <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,18 @@
+{
+  "name": "acervo",
+  "productName": "Claude Videos Collection",
+  "version": "1.0.0",
+  "description": "Biblioteca de vídeos e composições HTML gerados com o Claude Code, com o histórico das conversas.",
+  "main": "main.js",
+  "author": "Pedro",
+  "license": "UNLICENSED",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "build": "bash build/build.sh"
+  },
+  "devDependencies": {
+    "@electron/packager": "^20.3.0",
+    "electron": "^45.3.0"
+  }
+}
