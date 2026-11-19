@@ -27,6 +27,7 @@ npx @electron/packager . "$NAME" \
   --platform=darwin --arch="$ARCH" \
   --out=dist --overwrite \
   --icon=build/icon.icns \
+  --extend-info=build/extra-info.plist \
   --app-bundle-id=local.claude-videos-collection \
   --app-category-type=public.app-category.video \
   --ignore='^/dist' --ignore='^/build' --ignore='^/\.claude' >/dev/null

@@ -11,6 +11,9 @@ App de macOS para navegar, pré-visualizar e retomar o trabalho nos vídeos e co
 - **Player**: timecode com frames, avanço quadro a quadro (setas), loop, velocidade e tela cheia.
 - **Conversas**: para cada arquivo, lista as conversas do Claude Code que mexeram naquela pasta e mostra o histórico.
 - **Retomar**: escreva o que quer mudar e o app abre o Claude Code no Terminal, continuando a conversa escolhida ou começando uma nova.
+- **Botão direito**: abrir, abrir no QuickTime, Visualização Rápida, obter informações, renomear, comprimir, duplicar, criar atalho, copiar, copiar para, mover para, ir para, mostrar no Finder e compartilhar.
+- **Reorganizar pastas**: junta as subpastas de nomes parecidos (80% por padrão, ajustável) dentro de subpastas novas. A comparação é feita por regras fixas, letra a letra e pelo começo do nome, sem IA. A pasta principal nunca é renomeada nem movida, nada muda antes de você confirmar a prévia e dá para desfazer.
+- **Conversas continuam ligadas**: o app guarda o que ele mesmo moveu ou renomeou, e o painel de conversas segue achando as conversas antigas do projeto.
 
 ## Requisitos
 

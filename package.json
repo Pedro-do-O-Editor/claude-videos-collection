@@ -1,7 +1,7 @@
 {
   "name": "acervo",
   "productName": "Claude Videos Collection",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Biblioteca de vídeos e composições HTML gerados com o Claude Code, com o histórico das conversas.",
   "main": "main.js",
   "author": "Pedro",

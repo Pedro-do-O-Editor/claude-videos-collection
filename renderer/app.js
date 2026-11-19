@@ -98,13 +98,13 @@ const dirOf = (p) => p.slice(0, p.lastIndexOf('/'));
 const baseOf = (p) => p.slice(p.lastIndexOf('/') + 1);
 
 let toastTimer = null;
-function toast(msg, isErr) {
+function toast(msg, isErr, ms) {
   const t = $('toast');
   t.textContent = msg;
   t.classList.toggle('err', !!isErr);
   t.hidden = false;
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { t.hidden = true; }, isErr ? 6000 : 2600);
+  toastTimer = setTimeout(() => { t.hidden = true; }, ms || (isErr ? 6000 : 2600));
 }
 
 // ---------- estado ----------
@@ -231,8 +231,239 @@ function assetCard(a, list) {
   const open = () => openViewer(a, list);
   card.addEventListener('click', open);
   card.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } });
+  bindContext(card, a.path);
   if (a.kind === 'video') attachScrub(card, thumb, a);
   return card;
+}
+
+// ---------- reorganizar pastas ----------
+// a pasta matriz é a pasta principal que está aberta (ou a única da biblioteca)
+function reorgTarget() {
+  if (S.nav.mode !== 'folder') return null;
+  if (S.nav.path) return S.libs.some((l) => l.root === S.nav.path && l.exists) ? S.nav.path : null;
+  const ok = S.libs.filter((l) => l.exists);
+  return ok.length === 1 ? ok[0].root : null;
+}
+
+async function openReorg(root) {
+  if (S.viewer) closeViewer();
+  const st = { threshold: Number(prefs.reorgThreshold) || 80, plan: null, off: new Set(), names: new Map() };
+  const list = h('div', { class: 'reorg-list' });
+  const pct = h('b', null, st.threshold + '%');
+  const range = h('input', { class: 'range', type: 'range', min: '60', max: '95', step: '5', value: String(st.threshold), title: 'Semelhança mínima entre os nomes' });
+  const summary = h('span', { class: 'reorg-sum' });
+  const err = h('div', { class: 'modal-err' });
+  const go = h('button', { class: 'btn small' }, 'Reorganizar');
+  const cancel = h('button', { class: 'btn ghost small' }, 'Cancelar');
+  const undoBtn = h('button', { class: 'btn ghost small', hidden: true }, 'Desfazer a última');
+  const box = h('div', { class: 'modal wide', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Reorganizar pastas' },
+    h('div', { class: 'modal-title' }, 'Reorganizar pastas de "' + baseOf(root) + '"'),
+    h('p', { class: 'modal-note' }, 'Junta as subpastas de nomes parecidos dentro de uma subpasta nova. A comparação é feita letra a letra, sem IA. A pasta "' + baseOf(root) + '" em si não é renomeada nem movida, e nada muda até você confirmar.'),
+    h('div', { class: 'reorg-ctrl' }, h('span', null, 'Semelhança mínima'), range, pct, summary),
+    list, err,
+    h('div', { class: 'modal-row' }, undoBtn, h('span', { style: 'flex:1' }), cancel, go));
+  const back = h('div', { class: 'modal-back' }, box);
+  const done = () => { back.remove(); document.removeEventListener('keydown', onKey, true); };
+  const onKey = (e) => {
+    if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); done(); }
+    else e.stopPropagation();
+  };
+  document.addEventListener('keydown', onKey, true);
+  cancel.addEventListener('click', done);
+  back.addEventListener('mousedown', (e) => { if (e.target === back) done(); });
+  document.body.append(back);
+
+  const chosen = () => (st.plan ? st.plan.groups : []).map((g) => ({
+    name: (st.names.get(g.name) || g.name).trim(),
+    existing: g.existing,
+    members: g.members.filter((m) => !st.off.has(g.name + '/' + m)),
+    key: g.name,
+  })).filter((g) => !st.off.has(g.key) && g.members.length >= (g.existing ? 1 : 2));
+  const refresh = () => {
+    const sel = chosen();
+    const n = sel.reduce((k, g) => k + g.members.length, 0);
+    go.textContent = n ? 'Reorganizar ' + n + (n === 1 ? ' pasta' : ' pastas') + ' em ' + sel.length + (sel.length === 1 ? ' grupo' : ' grupos') : 'Reorganizar';
+    go.disabled = !n;
+  };
+  const draw = () => {
+    list.textContent = '';
+    const p = st.plan;
+    if (!p) { list.append(h('div', { class: 'panel-note' }, h('div', { class: 'spinner', style: 'margin:0 auto 10px' }), 'Comparando os nomes…')); return; }
+    if (p.error) { list.append(h('div', { class: 'panel-note' }, p.error)); return; }
+    summary.textContent = p.folders + ' subpastas · ' + p.groups.length + (p.groups.length === 1 ? ' grupo' : ' grupos');
+    if (!p.groups.length) list.append(h('div', { class: 'panel-note' }, 'Nenhuma subpasta com nomes ' + p.threshold + '% parecidos. Baixe a semelhança mínima para juntar nomes menos parecidos.'));
+    for (const g of p.groups) {
+      const on = !st.off.has(g.name);
+      const check = h('input', { type: 'checkbox', title: 'Incluir este grupo' });
+      check.checked = on;
+      check.addEventListener('change', () => { if (check.checked) st.off.delete(g.name); else st.off.add(g.name); draw(); });
+      const name = h('input', { class: 'modal-input reorg-name', type: 'text', spellcheck: 'false', disabled: g.existing || !on, title: g.existing ? 'Subpasta criada antes pelo app' : 'Nome da subpasta nova' });
+      name.value = st.names.get(g.name) || g.name;
+      name.addEventListener('input', () => { st.names.set(g.name, name.value); err.textContent = ''; refresh(); });
+      const members = h('div', { class: 'reorg-members' });
+      for (const m of g.members) {
+        const key = g.name + '/' + m;
+        const mOn = !st.off.has(key);
+        const chip = h('button', { class: 'chip' + (mOn && on ? ' on' : ''), disabled: !on, title: mOn ? 'Clique para deixar esta pasta onde está' : 'Clique para incluir' }, m);
+        chip.addEventListener('click', () => { if (st.off.has(key)) st.off.delete(key); else st.off.add(key); draw(); });
+        members.append(chip);
+      }
+      list.append(h('div', { class: 'reorg-group' + (on ? '' : ' off') },
+        h('div', { class: 'reorg-head' }, check, icon('folder'), name,
+          h('span', { class: 'tag' }, g.existing ? 'já existe' : g.score + '% parecidos')),
+        members));
+    }
+    refresh();
+  };
+  let tok = 0;
+  const load = async () => {
+    const my = ++tok;
+    st.plan = null; draw();
+    const p = await api.reorgPlan(root, st.threshold / 100);
+    if (my !== tok) return;
+    st.plan = p; st.off.clear(); st.names.clear();
+    draw();
+  };
+  let rt = null;
+  range.addEventListener('input', () => {
+    st.threshold = Number(range.value);
+    pct.textContent = st.threshold + '%';
+    prefs.reorgThreshold = st.threshold; savePrefs();
+    clearTimeout(rt); rt = setTimeout(load, 180);
+  });
+  go.addEventListener('click', async () => {
+    const sel = chosen();
+    const bad = sel.find((g) => !g.name || /[/:]/.test(g.name) || g.name.startsWith('.'));
+    if (bad) { err.textContent = 'Nome de grupo inválido: "' + bad.name + '".'; return; }
+    const dup = sel.find((g, i) => sel.findIndex((x) => x.name.toLowerCase() === g.name.toLowerCase()) !== i);
+    if (dup) { err.textContent = 'Dois grupos com o mesmo nome: "' + dup.name + '".'; return; }
+    go.disabled = true; go.textContent = 'Movendo…';
+    const r = await api.reorgApply(root, sel.map(({ name, existing, members }) => ({ name, existing, members })));
+    done();
+    if (r.error) { toast(r.error, true); return; }
+    toast(r.moved + (r.moved === 1 ? ' pasta organizada' : ' pastas organizadas') + ' em ' + r.created + (r.created === 1 ? ' grupo novo' : ' grupos novos') + (r.errors.length ? ' · ' + r.errors.length + ' não movidas: ' + r.errors[0] : '') + '. Dá para desfazer em Reorganizar pastas.', r.errors.length > 0, 7000);
+    S.infoCache.clear();
+    await reload();
+  });
+  undoBtn.addEventListener('click', async () => {
+    undoBtn.disabled = true;
+    const r = await api.reorgUndo(root);
+    done();
+    if (r.error) { toast(r.error, true); return; }
+    toast(r.restored + (r.restored === 1 ? ' pasta voltou' : ' pastas voltaram') + ' para o lugar' + (r.errors.length ? ' · ' + r.errors.length + ' com problema: ' + r.errors[0] : ''), r.errors.length > 0, 7000);
+    if (S.nav.mode === 'folder' && S.nav.path && S.nav.path !== root) S.nav.path = root;
+    S.infoCache.clear();
+    await reload();
+  });
+  api.reorgLast(root).then((last) => {
+    if (!last) return;
+    undoBtn.hidden = false;
+    undoBtn.textContent = last.count > 1 ? 'Desfazer a última (' + last.count + ' no histórico)' : 'Desfazer a última';
+    undoBtn.title = 'Devolve as ' + last.moved + ' pastas movidas em ' + fmtDate(last.at, true);
+  });
+  load();
+}
+
+// ---------- botão direito ----------
+function latestVideo(node) {
+  if (!node) return null;
+  const vids = node.all.filter((a) => a.kind === 'video');
+  if (!vids.length) return null;
+  const renders = vids.filter((a) => /\/(renders|export|exports|05_EXPORT)\//i.test(a.path));
+  return (renders.length ? renders : vids).reduce((m, a) => (a.mtime > m.mtime ? a : m)).path;
+}
+function bindContext(el, p, node) {
+  el.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    el.classList.add('ctx-on');
+    api.contextMenu(p, { video: node ? latestVideo(node) : null }).finally(() => el.classList.remove('ctx-on'));
+  });
+}
+
+// caixa de texto para renomear (o Electron não tem prompt())
+function promptName({ title, value, isDir }) {
+  return new Promise((resolve) => {
+    const input = h('input', { class: 'modal-input', type: 'text', spellcheck: 'false', autocomplete: 'off' });
+    input.value = value;
+    const err = h('div', { class: 'modal-err' });
+    const ok = h('button', { class: 'btn small' }, 'Renomear');
+    const cancel = h('button', { class: 'btn ghost small' }, 'Cancelar');
+    const box = h('div', { class: 'modal', role: 'dialog', 'aria-modal': 'true', 'aria-label': title },
+      h('div', { class: 'modal-title' }, title),
+      input, err,
+      h('div', { class: 'modal-row' }, cancel, ok));
+    const back = h('div', { class: 'modal-back' }, box);
+    const done = (v) => { back.remove(); document.removeEventListener('keydown', onKey, true); resolve(v); };
+    const submit = () => {
+      const v = input.value.trim();
+      if (!v) { err.textContent = 'O nome não pode ficar vazio.'; return; }
+      if (/[/:]/.test(v)) { err.textContent = 'O nome não pode ter "/" nem ":".'; return; }
+      if (v.startsWith('.')) { err.textContent = 'O nome não pode começar com ponto.'; return; }
+      done(v === value ? null : v);
+    };
+    const onKey = (e) => {
+      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); done(null); }
+      else if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); submit(); }
+      else e.stopPropagation();
+    };
+    document.addEventListener('keydown', onKey, true);
+    ok.addEventListener('click', submit);
+    cancel.addEventListener('click', () => done(null));
+    back.addEventListener('mousedown', (e) => { if (e.target === back) done(null); });
+    input.addEventListener('input', () => { err.textContent = ''; });
+    document.body.append(back);
+    input.focus();
+    // como no Finder: seleciona o nome sem a extensão
+    const dot = isDir ? -1 : value.lastIndexOf('.');
+    input.setSelectionRange(0, dot > 0 ? dot : value.length);
+  });
+}
+
+function nearestNode(p) {
+  let cur = p;
+  while (cur && !nodeAt(cur)) {
+    const up = dirOf(cur);
+    if (!up || up === cur) return null;
+    cur = up;
+  }
+  return cur || null;
+}
+
+// depois de renomear ou mover: ajusta onde o usuário está e relê a biblioteca
+async function afterMove(from, to) {
+  const swap = (p) => (p === from || (p && p.startsWith(from + '/')) ? (rootOf(to) ? to + p.slice(from.length) : dirOf(from)) : p);
+  if (S.viewer && (S.viewer.asset.path === from || S.viewer.asset.path.startsWith(from + '/'))) closeViewer();
+  if (S.nav.mode === 'folder' && S.nav.path) S.nav.path = swap(S.nav.path);
+  if (prefs.last) { prefs.last = swap(prefs.last); savePrefs(); }
+  await reload();
+  if (S.nav.mode === 'folder' && S.nav.path && !nodeAt(S.nav.path)) go({ mode: 'folder', path: nearestNode(S.nav.path) });
+}
+
+async function onFiles(ch, p) {
+  if (ch === 'files:busy') { if (p) toast(p, false, 120000); return; }
+  if (ch === 'files:info') { toast(p); return; }
+  if (ch === 'files:error') { toast(p, true); return; }
+  if (ch === 'ctx:goto') {
+    if (S.viewer) closeViewer();
+    go({ mode: 'folder', path: nodeAt(p) ? p : nearestNode(p) });
+    return;
+  }
+  if (ch === 'ctx:rename') {
+    const name = await promptName({ title: 'Renomear', value: baseOf(p.path), isDir: p.isDir });
+    if (!name) return;
+    const r = await api.rename(p.path, name);
+    if (!r.ok) { toast(r.error, true); return; }
+    toast('Renomeado para ' + baseOf(r.to));
+    await afterMove(p.path, r.to);
+    return;
+  }
+  if (ch === 'reorg:open') { openReorg(p); return; }
+  if (ch === 'files:changed') {
+    toast(p.message);
+    if (p.from) await afterMove(p.from, p.to);
+    else { S.infoCache.clear(); await reload(); }
+  }
 }
 
 // passar o mouse sobre a miniatura percorre o vídeo
@@ -292,6 +523,7 @@ function folderCard(node) {
   const open = () => go({ mode: 'folder', path: node.path });
   card.addEventListener('click', open);
   card.addEventListener('keydown', (e) => { if (e.key === 'Enter') open(); });
+  bindContext(card, node.path, node);
   return card;
 }
 
@@ -340,17 +572,21 @@ function renderSidebar() {
       if (cur && (cur === lib.root || cur.startsWith(lib.root + '/'))) S.nav = { mode: 'folder', path: null };
       await reload();
     });
-    tree.append(h('button', {
+    const rootItem = h('button', {
       class: 'tree-item' + (cur === lib.root ? ' on' : '') + (lib.exists ? '' : ' missing'),
       title: lib.root + (lib.exists ? '' : ' (não encontrada)'),
       onclick: () => go({ mode: 'folder', path: lib.root }),
-    }, chev, icon('folder'), h('span', { class: 'label' }, lib.name), rm));
+    }, chev, icon('folder'), h('span', { class: 'label' }, lib.name), rm);
+    if (lib.exists) bindContext(rootItem, lib.root, lib.tree);
+    tree.append(rootItem);
     if (!open) continue;
     const kids = [...lib.tree.dirs.values()].filter((n) => n.all.some(kindOn)).sort((a, b) => a.name.localeCompare(b.name, 'pt', { numeric: true }));
     for (const n of kids) {
       const on = cur && (cur === n.path || cur.startsWith(n.path + '/'));
-      tree.append(h('button', { class: 'tree-item child' + (on ? ' on' : ''), title: n.path, onclick: () => go({ mode: 'folder', path: n.path }) },
-        icon('folder'), h('span', { class: 'label' }, n.name)));
+      const item = h('button', { class: 'tree-item child' + (on ? ' on' : ''), title: n.path, onclick: () => go({ mode: 'folder', path: n.path }) },
+        icon('folder'), h('span', { class: 'label' }, n.name));
+      bindContext(item, n.path, n);
+      tree.append(item);
     }
   }
 }
@@ -414,6 +650,7 @@ function renderLibrary() {
     renderChips([]);
     $('count').textContent = '';
     $('btn-folder-sessions').hidden = true;
+    $('btn-reorg').hidden = true;
     content.append(h('div', { class: 'empty' },
       h('h2', null, 'Sua biblioteca está vazia'),
       h('p', null, 'Adicione a pasta onde ficam os vídeos e as composições HTML feitos com o Claude Code. O app lê a pasta sem mexer em nenhum arquivo.'),
@@ -451,6 +688,7 @@ function renderLibrary() {
   $('seg-view').style.visibility = recent ? 'hidden' : '';
   $('sort').style.visibility = recent ? 'hidden' : '';
   $('btn-folder-sessions').hidden = !(S.nav.mode === 'folder' && S.nav.path && rootOf(S.nav.path) !== S.nav.path);
+  $('btn-reorg').hidden = !reorgTarget();
 
   folders = folders.filter((n) => n.all.some(matches));
   if (prefs.sort === 'name') folders.sort((a, b) => a.name.localeCompare(b.name, 'pt', { numeric: true }));
@@ -969,6 +1207,7 @@ function init() {
   $('btn-add-root').addEventListener('click', addRoot);
   $('btn-add-root-small').addEventListener('click', addRoot);
   $('btn-rescan').addEventListener('click', () => { S.infoCache.clear(); reload(); });
+  $('btn-reorg').addEventListener('click', () => { const r = reorgTarget(); if (r) openReorg(r); });
   $('btn-folder-sessions').addEventListener('click', () => { SP.filter = S.nav.path; SP.selected = null; SP.query = ''; $('sess-search').value = ''; go({ mode: 'sessions' }); });
 
   let st = null;
@@ -1040,6 +1279,12 @@ function init() {
     }
   });
 
+  api.onFiles(onFiles);
+  // botão direito no título do visualizador = mesmo menu do arquivo aberto
+  document.querySelector('.v-title').addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    if (S.viewer) api.contextMenu(S.viewer.asset.path, {});
+  });
   api.onMenu((what) => { if (what === 'add-root') addRoot(); if (what === 'rescan') { S.infoCache.clear(); reload(); } });
   api.onSessionsProgress((p) => { if (!S.sessionsReady) $('status').textContent = 'Lendo conversas ' + p.done + ' de ' + p.total + '…'; });
 

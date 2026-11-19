@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, shell, nativeImage, Menu } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, nativeImage, Menu, clipboard } = require('electron');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -6,8 +6,12 @@ const { spawn } = require('child_process');
 const { scanRoot } = require('./lib/scan');
 const { SessionStore } = require('./lib/sessions');
 const { Media } = require('./lib/media');
+const fileops = require('./lib/fileops');
+const reorg = require('./lib/reorg');
 
 const HOME = os.homedir();
+const TESTING = !app.isPackaged && !!process.env.ACERVO_TEST;
+if (TESTING && process.env.ACERVO_USERDATA) app.setPath('userData', process.env.ACERVO_USERDATA);
 let win = null;
 let config = { roots: [] };
 let configFile = '';
@@ -26,6 +30,18 @@ function loadConfig() {
     config = { roots: fs.existsSync(def) ? [def] : [] };
   }
   if (!Array.isArray(config.roots)) config.roots = [];
+  if (!Array.isArray(config.moves)) config.moves = [];   // pastas movidas pelo app (mantém as conversas ligadas)
+  if (!Array.isArray(config.groups)) config.groups = []; // subpastas criadas pelo "Reorganizar pastas"
+  if (!Array.isArray(config.reorgs)) config.reorgs = config.lastReorg ? [config.lastReorg] : []; // histórico para desfazer
+  delete config.lastReorg;
+}
+
+// guarda de onde para onde algo foi movido ou renomeado pelo app
+function recordMoves(list) {
+  for (const m of list) if (m.from && m.to && m.from !== m.to) config.moves.push({ from: m.from, to: m.to, at: Date.now() });
+  if (config.moves.length > 3000) config.moves = config.moves.slice(-3000);
+  saveConfig();
+  if (sessions) sessions.setMoves(config.moves);
 }
 function saveConfig() {
   fs.mkdirSync(path.dirname(configFile), { recursive: true });
@@ -218,6 +234,152 @@ function openInTerminal({ cwd, sessionId, prompt, raw }) {
   return { ok: true };
 }
 
+// ---------- menu de botão direito ----------
+const isRoot = (p) => config.roots.includes(p);
+const tell = (channel, payload) => { if (win && !win.isDestroyed()) win.webContents.send(channel, payload); };
+const PLAYABLE = /\.(mp4|mov|m4v|webm|mkv|avi|wav|mp3|m4a|aac|aif|aiff|flac)$/i;
+
+// roda uma ação de arquivo e avisa a interface para atualizar a biblioteca
+async function fileAction(label, fn, { busy } = {}) {
+  if (busy) tell('files:busy', busy);
+  try {
+    const res = await fn();
+    if (res && res.message) tell('files:changed', res);
+  } catch (err) {
+    tell('files:error', label + ': ' + String(err.stderr || err.message || err).trim().slice(0, 300));
+  }
+}
+
+async function pickFolder(title, buttonLabel, from) {
+  if (TESTING && process.env.ACERVO_PICK) return process.env.ACERVO_PICK;
+  const r = await dialog.showOpenDialog(win, {
+    title,
+    buttonLabel,
+    defaultPath: path.dirname(from),
+    properties: ['openDirectory', 'createDirectory'],
+  });
+  return r.canceled || !r.filePaths[0] ? null : r.filePaths[0];
+}
+
+function showContextMenu(p, opts) {
+  if (!known(p)) return;
+  let st;
+  try { st = fs.statSync(p); } catch { tell('files:error', 'Este item não existe mais. Atualize a biblioteca.'); return; }
+  const isDir = st.isDirectory();
+  const name = path.basename(p);
+  const short = name.length > 34 ? name.slice(0, 32) + '…' : name;
+  const root = isRoot(p);
+  const video = isDir ? (opts.video && known(opts.video) ? opts.video : null) : (PLAYABLE.test(p) ? p : null);
+  const dir = isDir ? p : path.dirname(p);
+
+  const template = [
+    { label: 'Abrir', click: () => fileAction('Abrir', async () => { const err = await shell.openPath(p); if (err) throw new Error(err); }) },
+  ];
+  if (video) {
+    template.push({
+      label: isDir ? 'Abrir último vídeo no QuickTime Player' : 'Abrir no QuickTime Player',
+      click: () => fileAction('QuickTime', () => fileops.openWith('QuickTime Player', video)),
+    });
+  }
+  template.push(
+    { type: 'separator' },
+    { label: 'Visualização Rápida', click: () => fileops.quickLookOpen(p) },
+    { label: 'Obter Informações', click: () => fileAction('Obter Informações', () => fileops.getInfo(p)) },
+    { type: 'separator' },
+    {
+      label: 'Renomear…',
+      enabled: !root,
+      click: () => tell('ctx:rename', { path: p, isDir }),
+    },
+    {
+      label: 'Comprimir "' + short + '"',
+      click: () => fileAction('Comprimir', async () => {
+        const zip = await fileops.compress(p);
+        return { message: 'Comprimido: ' + path.basename(zip), to: zip };
+      }, { busy: 'Comprimindo "' + name + '"…' }),
+    },
+    {
+      label: 'Duplicar',
+      click: () => fileAction('Duplicar', async () => {
+        const to = await fileops.duplicate(p);
+        return { message: 'Duplicado: ' + path.basename(to), to };
+      }, { busy: isDir ? 'Duplicando a pasta…' : null }),
+    },
+    {
+      label: 'Criar Atalho',
+      click: () => fileAction('Criar Atalho', async () => {
+        const r = await fileops.makeAlias(p);
+        return { message: r.kind === 'alias' ? 'Atalho criado: ' + path.basename(r.file) : 'Link criado (o macOS não deixou usar o Finder): ' + path.basename(r.file), to: r.file };
+      }),
+    },
+    { type: 'separator' },
+    {
+      label: 'Copiar "' + short + '"',
+      click: () => fileAction('Copiar', async () => {
+        await fileops.copyToClipboard(p);
+        tell('files:info', 'Copiado. Cole no Finder com ⌘V.');
+      }),
+    },
+    {
+      label: 'Copiar para…',
+      click: () => fileAction('Copiar para', async () => {
+        const dest = await pickFolder('Copiar "' + name + '" para…', 'Copiar', p);
+        if (!dest) return null;
+        tell('files:busy', 'Copiando "' + name + '"…');
+        const to = await fileops.copyTo(p, dest);
+        return { message: 'Copiado para ' + path.basename(dest), to };
+      }),
+    },
+    {
+      label: 'Mover para…',
+      enabled: !root,
+      click: () => fileAction('Mover para', async () => {
+        const dest = await pickFolder('Mover "' + name + '" para…', 'Mover', p);
+        if (!dest) return null;
+        tell('files:busy', 'Movendo "' + name + '"…');
+        const to = await fileops.moveTo(p, dest);
+        recordMoves([{ from: p, to }]);
+        return { message: 'Movido para ' + path.basename(dest) + (known(to) ? '' : ' (fora da biblioteca)'), from: p, to };
+      }),
+    },
+    { type: 'separator' },
+    {
+      label: 'Ir para',
+      submenu: [
+        { label: isDir ? 'Esta pasta no app' : 'Pasta do arquivo no app', click: () => tell('ctx:goto', dir) },
+        { label: 'Finder', click: () => shell.showItemInFolder(p) },
+        { label: 'Terminal', click: () => fileAction('Terminal', () => fileops.openWith('Terminal', dir)) },
+      ],
+    },
+    { label: 'Mostrar no Finder', click: () => shell.showItemInFolder(p) },
+    { label: 'Copiar caminho', click: () => { clipboard.writeText(p); tell('files:info', 'Caminho copiado.'); } },
+    { type: 'separator' },
+    { label: 'Compartilhar', role: 'shareMenu', sharingItem: { filePaths: [p] } },
+  );
+  if (root) {
+    template.push(
+      { type: 'separator' },
+      { label: 'Reorganizar pastas…', click: () => tell('reorg:open', p) },
+      { label: 'Pasta principal da biblioteca: renomear e mover estão desligados', enabled: false },
+    );
+  }
+  if (TESTING && opts.run) {
+    const find = (items) => {
+      for (const it of items) {
+        if (it.label === opts.run) return it;
+        if (it.submenu) { const f = find(it.submenu); if (f) return f; }
+      }
+      return null;
+    };
+    const it = find(template);
+    if (!it) return { ran: false, labels: template.map((x) => x.label || '—') };
+    if (it.enabled === false) return { ran: false, disabled: true };
+    if (it.click) it.click();
+    return { ran: true };
+  }
+  Menu.buildFromTemplate(template).popup({ window: win });
+}
+
 // ---------- IPC ----------
 function known(p) {
   // só mexe em caminhos que estão dentro das pastas da biblioteca
@@ -303,6 +465,50 @@ function registerIpc() {
     return openInTerminal({ cwd: dir, raw: 'npm run dev' });
   });
 
+  ipcMain.handle('reorg:plan', async (e, root, threshold) => {
+    if (!isRoot(root)) return { error: 'Escolha uma pasta principal da biblioteca.' };
+    try { return await reorg.plan(root, threshold, config.groups); } catch (err) { return { error: err.message }; }
+  });
+  ipcMain.handle('reorg:apply', async (e, root, groups) => {
+    if (!isRoot(root) || !Array.isArray(groups)) return { error: 'Pedido inválido.' };
+    let record;
+    try { record = await reorg.apply(root, groups, config.groups); } catch (err) { return { error: err.message }; }
+    for (const d of record.created) if (!config.groups.includes(d)) config.groups.push(d);
+    if (record.moves.length) { config.reorgs.push(record); if (config.reorgs.length > 30) config.reorgs = config.reorgs.slice(-30); }
+    recordMoves(record.moves);
+    return { moved: record.moves.length, created: record.created.length, errors: record.errors, moves: record.moves };
+  });
+  const lastFor = (root) => { for (let i = config.reorgs.length - 1; i >= 0; i--) if (config.reorgs[i].root === root) return i; return -1; };
+  ipcMain.handle('reorg:last', (e, root) => {
+    const i = lastFor(root);
+    if (i < 0) return null;
+    const r = config.reorgs[i];
+    return { at: r.at, moved: r.moves.length, created: r.created.length, count: config.reorgs.filter((x) => x.root === root).length };
+  });
+  ipcMain.handle('reorg:undo', async (e, root) => {
+    const i = lastFor(root);
+    if (i < 0) return { error: 'Não há reorganização para desfazer nesta pasta.' };
+    const r = config.reorgs[i];
+    const out = await reorg.undo(r);
+    const undone = new Set(r.moves.map((m) => m.from + '\n' + m.to));
+    config.moves = config.moves.filter((m) => !undone.has(m.from + '\n' + m.to));
+    config.groups = config.groups.filter((g) => fs.existsSync(g));
+    config.reorgs.splice(i, 1);
+    saveConfig();
+    sessions.setMoves(config.moves);
+    return { ...out, moves: r.moves };
+  });
+
+  ipcMain.handle('ctx:menu', (e, p, opts) => showContextMenu(p, opts || {}));
+  ipcMain.handle('files:rename', async (e, p, name) => {
+    if (!known(p) || isRoot(p)) return { ok: false, error: 'Este item não pode ser renomeado por aqui.' };
+    try {
+      const to = await fileops.rename(p, name);
+      recordMoves([{ from: p, to }]);
+      return { ok: true, to };
+    } catch (err) { return { ok: false, error: err.message }; }
+  });
+
   ipcMain.handle('shell:reveal', (e, p) => { if (known(p)) shell.showItemInFolder(p); });
   ipcMain.handle('shell:open', (e, p) => (known(p) ? shell.openPath(p) : 'fora da biblioteca'));
 }
@@ -311,6 +517,7 @@ function registerIpc() {
 async function devHooks() {
   if (app.isPackaged || !process.env.ACERVO_TEST) return;
   const out = process.env.ACERVO_SHOT_DIR || os.tmpdir();
+  fs.mkdirSync(out, { recursive: true });
   const steps = JSON.parse(fs.readFileSync(process.env.ACERVO_TEST, 'utf8'));
   await new Promise((r) => win.webContents.once('did-finish-load', r));
   for (const s of steps) {
@@ -335,6 +542,7 @@ app.whenReady().then(() => {
   const cache = path.join(app.getPath('userData'), 'cache');
   media = new Media(cache);
   sessions = new SessionStore(path.join(cache, 'sessions-index.json'));
+  sessions.setMoves(config.moves);
   registerIpc();
   buildMenu();
   createWindow();

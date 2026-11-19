@@ -16,6 +16,17 @@ contextBridge.exposeInMainWorld('acervo', {
   runDev: (dir) => ipcRenderer.invoke('project:dev', dir),
   reveal: (p) => ipcRenderer.invoke('shell:reveal', p),
   open: (p) => ipcRenderer.invoke('shell:open', p),
+  contextMenu: (p, opts) => ipcRenderer.invoke('ctx:menu', p, opts),
+  reorgPlan: (root, t) => ipcRenderer.invoke('reorg:plan', root, t),
+  reorgApply: (root, groups) => ipcRenderer.invoke('reorg:apply', root, groups),
+  reorgLast: (root) => ipcRenderer.invoke('reorg:last', root),
+  reorgUndo: (root) => ipcRenderer.invoke('reorg:undo', root),
+  rename: (p, name) => ipcRenderer.invoke('files:rename', p, name),
+  onFiles: (fn) => {
+    for (const ch of ['files:changed', 'files:error', 'files:busy', 'files:info', 'ctx:rename', 'ctx:goto', 'reorg:open']) {
+      ipcRenderer.on(ch, (e, payload) => fn(ch, payload));
+    }
+  },
   onMenu: (fn) => ipcRenderer.on('menu', (e, what) => fn(what)),
   onSessionsProgress: (fn) => ipcRenderer.on('sessions:progress', (e, p) => fn(p)),
 });
